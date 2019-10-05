@@ -5,7 +5,14 @@ import ResponseParser, { IResultFormat } from "./response_parser";
 import {countBy, size} from "lodash-es";
 import {sheets} from "googleapis/build/src/apis/sheets";
 import {validate} from "@babel/types";
+import CacheManager from "cache-manager";
+import md5 from "md5";
 
+const cache = CacheManager.caching({
+  max: 100,
+  store: "memory",
+  ttl: 10 // seconds
+});
 const Shifted = "_shifted";
 function sleep(ms) {
   return new Promise(resolve => {
@@ -513,6 +520,20 @@ export class BigQueryDatasource {
   }
 
   private async doQuery(query, requestId, maxRetries = 1) {
+    const queryId = md5(query);
+    try {
+      console.log(`getting cache for key ${queryId}`);
+      const preComputed = await cache.get(queryId);
+      if (preComputed) {
+        console.log(`cache for key ${queryId}: `, preComputed);
+        return {
+          rows: preComputed.rows,
+          schema: preComputed.schema
+        };
+      }
+    } catch (e) {
+      // ignore cache miss error
+    }
     if (!query) {
       return {
         rows: null,
@@ -557,6 +578,8 @@ export class BigQueryDatasource {
     let rows = queryResults.data.rows;
     const schema = queryResults.data.schema;
     rows = await this._getQueryResults(queryResults, rows, requestId, jobId);
+    console.log(`updating the cache for key ${queryId}`);
+    await cache.set(queryId, { rows, schema }, { ttl: 60 * 5 });
     return {
       rows,
       schema
